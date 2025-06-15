@@ -132,6 +132,8 @@ bool stateChanged = false;   // Flag to track state changes
 unsigned long mSec;
 unsigned long lastmSec = 0;
 float timeLeft = 25.0;
+int tens;                   // The tens digit of timeLeft
+int ones;                   // The ones digit of timeLeft
 float resetTime = 25.0;
 int buzzerReady = 1;
 
@@ -407,20 +409,26 @@ void loop() {
     //delay(500);
     //digitalWrite(buzzer,LOW);
     tone(buzzer, 520, 1500);
-    //delay(500);
     noTone(buzzer);
     buzzerReady = 0;
   }
 
  // Set both the large and small digits' values
+  tens = (int) timeLeft / 10;
+  ones = (int) timeLeft % 10;
   if (timeLeft > 4.99) {
-    setDigit(1,(int) timeLeft / 10, CHSV(timeHue, timeSat, 255));
-    setDigit(0,(int) timeLeft % 10, CHSV(timeHue, timeSat, 255));
-    DIGIT[0] = charArray[(int) timeLeft /10];
+    // The big LED display
+    if (ones > 0) {
+      tens += 1;
+    }
+    setDigit(1,tens, CHSV(timeHue, timeSat, 255));
+    setDigit(0,ones, CHSV(timeHue, timeSat, 255));
+    // The small LED display
+    DIGIT[0] = charArray[tens];
     if (timeLeft < 10.0) {
       DIGIT[0] = 0x0;
     }
-    DIGIT[1] = charArray[(int) timeLeft % 10];
+    DIGIT[1] = charArray[ones];
     //dotOn = FALSE;
   } else {
     setDigit(1,(int) timeLeft, CHSV(timeHue, 255, 255)); 
