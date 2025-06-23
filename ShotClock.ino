@@ -5,6 +5,7 @@
 // Designed for implementation using an Arduino ESP32 nano microcontroller
 
 // To-do list:
+// # [DONE] fix algorithm so clock changes from 25 to 24 after 1 second
 // # refactor for readibility and comments, including better serial messages for debugging
 // # Implement wireless (designate one unit as controller = wifi AP mode, and others as remotes = wifi station mode; same code for both)
 // # stretch goal: integrate into Nevco scoreboard system so only one controller is needed
@@ -30,8 +31,8 @@
 #define runningSwitch D2              // On-off rocker switch
 #define resetButton D3                // reset timer to 25 or 15
 #define fifteenSecondSwitch D5        // Toggle between 25 or 15 second mode
-#define CLK D6                        // rotary encoder output A
-#define DT D7                         // rotary encoder output B
+#define ROT_A D6                      // rotary encoder output A
+#define ROT_B D7                      // rotary encoder output B
 #define DATA_PIN D8                   // the arduino pin which is connected to the DataIn of the LED strip
 #define CLOCK4017pin D9               // Small LEDs multiplexed through 74HC4017 clock
 #define CC0pin D10                    // Small LEDs multiplexed through 74HC4017 enable low digit
@@ -115,26 +116,30 @@ const uint32_t digits[10] = {
 CRGB leds[NUM_LEDS];
 
 // Rotary encoder setup
-volatile int counter = 0;
-volatile int currentStateCLK;
-volatile int lastStateCLK;
+volatile int currentStateA;
+volatile int lastStateA;
 String currentDir ="";    // CW or CCW, used for debugging
 String lastDir ="";
 
 // Debouncing parameters
 const unsigned long DEBOUNCE_DELAY = 3;  // milliseconds
 unsigned long lastDebounceTime = 0;
-int lastrunning = HIGH;
-int running = HIGH;      // Current, debounced switch state
+int lastrunning = true;
+int running = true;      // Current, debounced switch state
 bool stateChanged = false;   // Flag to track state changes
 
 // Time variables
-unsigned long mSec;
+//unsigned long mSec;
 unsigned long lastmSec = 0;
-float timeLeft = 25.0;
+//unsigned long resetMillis;
+int resetTime = 25900;
+int timeLeft = 25900;
+int elapsedTime;
+//int lastTime;
+//int displayTime;
 int tens;                   // The tens digit of timeLeft
 int ones;                   // The ones digit of timeLeft
-float resetTime = 25.0;
+int tenths;                 // The tenths digit of timeLeft
 int buzzerReady = 1;
 
 // LED variables
@@ -159,28 +164,26 @@ void updateEncoder(){
     return;
   }
 
-	// Read the current state of CLK
-	currentStateCLK = digitalRead(CLK);
+	// Read the current state of ROT_A
+	currentStateA = digitalRead(ROT_A);
   lastDir = currentDir;
 
-	// If last and current state of CLK are different, then pulse occurred
+	// If last and current state of ROT_A are different, then pulse occurred
 	// React to only 1 state change to avoid double count
-	if (currentStateCLK != lastStateCLK  && currentStateCLK == 1){
+	if (currentStateA != lastStateA  && currentStateA == 1){
 
-		// If the DT state is different than the CLK state then
-		// the encoder is rotating CCW so decrement
-		if (digitalRead(DT) != currentStateCLK) {
-			counter --;
+		// If the ROT_B state is different than the ROT_A state then
+		// the encoder is rotating CCW
+		if (digitalRead(ROT_B) != currentStateA) {
 			currentDir ="CCW";
 		} else {
-			// Encoder is rotating CW so increment
-			counter ++;
+			// Otherwise encoder is rotating CW
 			currentDir ="CW";
 		}
 	}
 
-	// Remember last CLK state
-	lastStateCLK = currentStateCLK;
+	// Remember last ROT_A state
+	lastStateA = currentStateA;
 
   // Reset debouce timer
   lastDebounceTime = millis();
@@ -201,22 +204,24 @@ void setup() {
   
   // Initialize the On-Off switch
   // pinMode(SW_PIN, OUTPUT);
-  pinMode(runningSwitch, INPUT_PULLUP);
-  pinMode(resetButton, INPUT_PULLUP);
-  pinMode(fifteenSecondSwitch, INPUT_PULLUP);
+  pinMode(runningSwitch, INPUT);
+  pinMode(resetButton, INPUT);
+  pinMode(fifteenSecondSwitch, INPUT);
   //pinMode(buzzer, OUTPUT);
   //digitalWrite(buzzer,LOW);
 
   // Init the rotary encoder
-  pinMode(CLK,INPUT_PULLUP);
-  pinMode(DT,INPUT_PULLUP);
-  lastStateCLK = digitalRead(CLK);
-  attachInterrupt(CLK, updateEncoder, CHANGE);
-  //attachInterrupt(DT, updateEncoder, CHANGE);
+  pinMode(ROT_A,INPUT);
+  pinMode(ROT_B,INPUT);
+  lastStateA = digitalRead(ROT_A);
+  attachInterrupt(ROT_A, updateEncoder, CHANGE);
+  attachInterrupt(ROT_B, updateEncoder, CHANGE);
 
   // Initialize the timer
 
-  mSec = millis();
+  //mSec = millis();
+  //resetMillis = mSec;
+  //resetTime = 25000;
 
   // ============================================
   // Initialize the multiplexed 7-segment displays
@@ -263,8 +268,10 @@ void setup() {
 
 void loop() {
 
-  // Handle the real-time clock
+  // Capture the real-time clock
   CURmillis = millis();
+
+  // Set counter for small digit (7-segment) display routine
   if (CURmillis != PREVmillis) {
     milliCount++;
     PREVmillis = CURmillis;
@@ -272,66 +279,13 @@ void loop() {
   
   //  Read the 3 switches
   //int reading = digitalRead(runningSwitch); // on-off switch
-  int running = digitalRead(runningSwitch); // on-off switch
-  int resetClock = digitalRead(resetButton); // reset button
-  int fifteenSecond = digitalRead(fifteenSecondSwitch); // twenty-five & fifteen second clock toggle
+  int paused = digitalRead(runningSwitch); // on-off switch (high = paused, low = running)
+  int resetClock = digitalRead(resetButton); // reset button, inverted logic (low = reset button pressed)
+  int fifteenSecond = digitalRead(fifteenSecondSwitch); // twenty-five & fifteen second clock toggle (high = 15, low = 25)
 
-  /*
-  // =============================================
-	// Read and process the rotary encoder
-	currentStateCLK = digitalRead(CLK);
-  lastDir = currentDir;
-
-	// If last and current state of CLK are different, then pulse occurred
-	// React to only 1 state change to avoid double count
-	if (currentStateCLK != lastStateCLK && currentStateCLK == HIGH) {
-
-		// If the DT state is different than the CLK state then
-		// the encoder is rotating CCW so decrement
-		if (digitalRead(DT) == HIGH) {
-			counter --;
-			currentDir = "CCW";
-		} else {
-			// Encoder is rotating CW so increment
-			counter ++;
-			currentDir = "CW";
-		}
-    // Save the last clock state
-    Serial.print("Encoder CLK last state: ");
-    Serial.print(lastStateCLK);
-    Serial.print(" current state: ");
-    Serial.println(currentStateCLK);
-    lastStateCLK = currentStateCLK;
-  }
-  // End of rotary encoder processing  
-  // =============================================
-  */
-
-  // If you have borked your switch wiring, invert the read value
-  if (running == HIGH) {
-    running = LOW;
-  } else {
-    running = HIGH;
-  }
-
-  // If the switch changed, due to noise or pressing
-  //if (reading != lastrunning) {
-  //  // Reset the debouncing timer
-  //  lastDebounceTime = millis();
-  // }
-
-  // Check if enough time has passed since the last state change
-  //if ((millis() - lastDebounceTime) > DEBOUNCE_DELAY) {
-  //  // If the reading has been stable longer than the debounce delay
-  //  if (reading != running) {
-  //    running = reading;
-  //    stateChanged = true;
-  //  }
-  //}
-
-  resetTime = 25.0;
+  resetTime = 25900;
   if (fifteenSecond) {
-    resetTime = 15.0;
+    resetTime = 15900;
   }
   
   // if the 25-15 switch is hit while the clock is over 15 seconds that we'll drop to 15 seconds
@@ -339,37 +293,63 @@ void loop() {
     timeLeft = resetTime;
   }
   
+  // reset the clock if the reset button is pushed
   if (resetClock == LOW) {
     timeLeft = resetTime;
-    buzzerReady = 1;
-    Serial.print("Time left: ");
-    Serial.println(timeLeft);
+    elapsedTime = 0;
+    buzzerReady = true;
   }
 
-  // Handle the time adjustment due to countdown
-  if (running && (timeLeft > 0.0)) {
-    if (CURmillis - lastmSec > 99) {
-      timeLeft -= 0.1;
-      Serial.print("Time left: ");
+  // Ignore the passage of time if the timer is paused
+  if (paused) {
+    lastmSec = CURmillis;
+  }
+
+  // Count down the shot clock
+  if (!paused && (timeLeft > 0)) {
+    if ((CURmillis - lastmSec) > 100) {
+      elapsedTime += (int) (CURmillis - lastmSec);
+      timeLeft -= (int) (CURmillis - lastmSec);
+      Serial.print("elapsedTime = ");
+      Serial.print(elapsedTime);
+      Serial.print(", timeLeft = ");
       Serial.println(timeLeft);
       lastmSec = CURmillis;
-    } 
+    }
+    //lastmSec = CURmillis;
+  }
+  /*
+  if (!paused && (timeLeft > 0)) {
+    elapsedTime += (int) (CURmillis - lastmSec);
+    if (timeLeft >= 6000) {
+      timeLeft = resetTime - ((int) elapsedTime /1000) * 1000;
+    } else if ((timeLeft > 5000) && (elapsedTime > (resetTime - 5000))) {
+      timeLeft = 4900;
+    } else {
+      timeLeft = resetTime - ((int) elapsedTime /100) * 100;
+    }
+    lastmSec = CURmillis;
   } 
+  */
   
   // Handle the time adjustment due to rotary switch
-  if (!running) {
+  if (paused) {
     if (currentDir == "CCW") {
       Serial.print("Decrement timeLeft from ");
       Serial.print(timeLeft);
-      if (timeLeft > 5.99) {
-        timeLeft -= 1.0;
-      } else if (timeLeft > 4.99) {
-        timeLeft = 4.9;
+      if (timeLeft >= 6000) {
+        timeLeft -= 1000;
+        elapsedTime += 1000;
+      } else if (timeLeft >= 5000) {
+        timeLeft = 4900;
+        elapsedTime = resetTime - 4900;
       } else {
-        timeLeft -= 0.1;
+        timeLeft -= 100;
+        elapsedTime += 100;
       } 
-      if (timeLeft < 0.0) {
-        timeLeft = 0.0;
+      if (timeLeft < 0) {
+        timeLeft = 0;
+        elapsedTime = resetTime;
       }
       Serial.print(" to ");
       Serial.println(timeLeft);
@@ -377,15 +357,18 @@ void loop() {
     if (currentDir == "CW") {
       Serial.print("Increment timeLeft from ");
       Serial.print(timeLeft);
-      if ((timeLeft < 5.0) && (timeLeft > 4.90)) {
-        timeLeft = 5.0;
-      } else if (timeLeft > 4.99) {
-        timeLeft += 1.0;
+      if ((timeLeft < 5000) && (timeLeft > 4990)) {
+        timeLeft = 5000;
+        elapsedTime = resetTime - 5000;
+      } else if (timeLeft >= 5000) {
+        timeLeft += 1000;
+        elapsedTime -= 1000;
       } else {
-        timeLeft += 0.1;
+        timeLeft += 100;
+        elapsedTime -= 100;
       }
-      if (timeLeft > 98.9) {
-        timeLeft = 99.0;
+      if (timeLeft > 99000) {
+        timeLeft = 99000;
       }
       Serial.print(" to ");
       Serial.println(timeLeft);
@@ -397,45 +380,31 @@ void loop() {
     currentDir = "";
   }
 
-  if (running && (timeLeft < 0.1) && (buzzerReady > 0)) {
-    //Serial.println("Analog write 200 to buzzer");
-    //analogWrite(buzzer,200);
-    //Serial.println("Delay");
-    //delay(1500);
-    //Serial.println("Analog write 0 to buzzer");
-    //analogWrite(buzzer,0);
-    //Serial.println("Done with buzzer code");
-    //digitalWrite(buzzer,HIGH);
-    //delay(500);
-    //digitalWrite(buzzer,LOW);
+  if (!paused && (timeLeft < 100) && buzzerReady) {
     tone(buzzer, 520, 1500);
     noTone(buzzer);
-    buzzerReady = 0;
+    buzzerReady = false;
   }
 
- // Set both the large and small digits' values
-  tens = (int) timeLeft / 10;
-  ones = (int) timeLeft % 10;
-  if (timeLeft > 4.99) {
+  tens = (int) timeLeft / 10000;
+  ones = ((int) (timeLeft / 1000)) % 10;
+  tenths = ((int) (timeLeft / 100)) % 10;
+  if (timeLeft >= 5000) {
     // The big LED display
-    if (ones > 0) {
-      tens += 1;
-    }
     setDigit(1,tens, CHSV(timeHue, timeSat, 255));
     setDigit(0,ones, CHSV(timeHue, timeSat, 255));
     // The small LED display
     DIGIT[0] = charArray[tens];
-    if (timeLeft < 10.0) {
+    if (timeLeft < 10000) {
       DIGIT[0] = 0x0;
     }
     DIGIT[1] = charArray[ones];
-    //dotOn = FALSE;
   } else {
-    setDigit(1,(int) timeLeft, CHSV(timeHue, 255, 255)); 
-    DIGIT[0] = charArray[(int) timeLeft] + segH;    // adding segH lights up the decimal point
-    float timeShift = timeLeft * 10;
-    setDigit(0,(int) timeShift % 10, CHSV(timeHue, 255, 155)); 
-    DIGIT[1] = charArray[(int) timeShift % 10];
+    setDigit(1, ones, CHSV(timeHue, 255, 255)); 
+    DIGIT[0] = charArray[ones] + segH;    // adding segH lights up the decimal point
+    //float timeShift = timeLeft * 10;
+    setDigit(0, tenths, CHSV(timeHue, 255, 155)); 
+    DIGIT[1] = charArray[tenths];
     //dotOn = TRUE;
   }
 
